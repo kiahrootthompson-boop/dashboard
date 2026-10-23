@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Community Dashboard</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    /* Slightly smaller/larger base text for different monitor sizes */
+    html { font-size: 16px; }
+    @media (max-width: 1100px) { html { font-size: 14px; } }
+    @media (min-width: 1800px) { html { font-size: 18px; } }
+
+    html, body { height: 100%; }
+    body {
+      margin: 0; padding: 0;
+      display: flex; height: 100vh;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #f3f4f6; color: #111827;
+      overflow: hidden;
+      cursor: none; /* hide the mouse pointer on the kiosk display */
+    }
+
+    /* LEFT SIDE: Scrolling Events Feed */
+    .events-pane {
+      width: 70%; padding: 2.5rem 3rem;
+      display: flex; flex-direction: column;
+      overflow: hidden; position: relative;
+      border-right: 3px solid #e5e7eb;
+      background: #ffffff;
+    }
+
+    .pane-header {
+      display: flex;
+      align-items: center;
+      border-bottom: 2px solid #e5e7eb;
+      padding-bottom: 1rem;
+      margin-bottom: 1.5rem;
+      z-index: 10;
+      background: #ffffff;
+      flex-shrink: 0;
+    }
+
+    .logo-img {
+      height: 48px;
+      width: auto;
+      margin-right: 1.25rem;
+    }
+
+    .events-pane h1 {
+      font-size: 2.3rem; margin: 0;
+      color: #BB0000;
+    }
+
+    .events-container {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .events-scroll {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      animation: scrollUp 35s linear infinite; /* duration is set by the script */
+    }
+    .events-scroll:hover { animation-play-state: paused; }
+
+    .scroll-group {
+      padding-bottom: 1.25rem; /* identical gap between loops */
+    }
+
+    .event-item {
+      background: #f9fafb; padding: 1.5rem;
+      border-radius: 10px;
+      border: 1px solid #e5e7eb;
+      border-left: 6px solid #BB0000;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+      margin-bottom: 1.25rem;
+    }
+    .event-item:last-child { margin-bottom: 0; }
+    .event-item h3 { margin: 0 0 0.5rem 0; font-size: 1.5rem; color: #111827; }
+    .event-item p { margin: 0.3rem 0; color: #4b5563; font-size: 1.05rem; }
+
+    /* RIGHT SIDE: Weather & Top Info */
+    .info-pane {
+      width: 30%; background: #f3f4f6;
+      padding: 2.5rem; display: flex;
+      flex-direction: column; justify-content: flex-start;
+      align-items: center; text-align: center;
+    }
+    .info-pane h2 {
+      font-size: 1.6rem; color: #BB0000;
+      margin-top: 0; margin-bottom: 1.5rem;
+      border-bottom: 2px solid #e5e7eb;
+      width: 100%; padding-bottom: 1rem;
+    }
+
+    .weather-card {
+      background: #ffffff; padding: 2rem;
+      border-radius: 12px; width: 100%;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+      border: 1px solid #e5e7eb;
+    }
+    .weather-card h3 { font-size: 1.1rem; color: #6b7280; margin-top: 0; text-transform: uppercase; letter-spacing: 1px; }
+    .weather-val { font-size: 3.2rem; font-weight: bold; margin: 0.75rem 0; color: #111827; }
+    .weather-sub { font-size: 1.1rem; color: #BB0000; font-weight: 600; }
+
+    @keyframes scrollUp {
+      0% { transform: translateY(0); }
+      100% { transform: translateY(-50%); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- LEFT PANE: Community Events Ticker -->
+  <div class="events-pane">
+    <div class="pane-header">
+      <img src="https://upload.wikimedia.org/wikipedia/commons/e/ee/OSUCOMLogo.png" alt="Ohio State Logo" class="logo-img" onerror="this.style.display='none'">
+      <h1>Upcoming Events</h1>
+    </div>
+    <div class="events-container" id="events-container">
+      <div class="events-scroll" id="events-list">
+        <!-- Events injected here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANE: Weather / Sensor Data -->
+  <div class="info-pane">
+    <h2>Environment</h2>
+    <div class="weather-card">
+      <h3>Temperature</h3>
+      <div class="weather-val" id="temp">--</div>
+      <div class="weather-sub" id="hum">Humidity: --</div>
+    </div>
+  </div>
+
+  <script>
+    // ---------- SETTINGS ----------
+    // One Apps Script web app URL handles both events and sensor readings.
+    var WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbz55mfcgjgML_HquU4qWbjewb8Zug0CO-romZC2HsA7TFdQlCMIgYuGWB61PnhYeQmk/exec';
+
+    var EVENTS_REFRESH_MS = 30 * 1000;            // check for new events
+    var SENSOR_REFRESH_MS = 60 * 1000;            // ESP32 sends about once a minute
+    var SENSOR_STALE_MS   = 15 * 60 * 1000;       // show "--" if no reading for 15 min
+    var PAGE_RELOAD_MS    = 6 * 60 * 60 * 1000;   // full page refresh every 6 hours
+    var SCROLL_PX_PER_SEC = 40;                   // scroll speed
+    var TIME_ZONE         = 'America/New_York';
+
+    // ---------- HELPERS ----------
+    var currentRawDataString = '';
+    var lastGroupHtml = '';
+
+    // Stops text from the form being treated as HTML
+    function esc(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatWhen(raw, date) {
+      try {
+        return date.toLocaleString('en-US', {
+          weekday: 'short', month: 'short', day: 'numeric',
+          hour: 'numeric', minute: '2-digit', timeZone: TIME_ZONE
+        });
+      } catch (e) {
+        return String(raw);
+      }
+    }
+
+    // ---------- SENSOR ----------
+    function showSensor(temp, hum) {
+      document.getElementById('temp').innerText = temp;
+      document.getElementById('hum').innerText = 'Humidity: ' + hum;
+    }
+
+    async function fetchSensorData() {
+      try {
+        var response = await fetch(WEB_APP_URL + '?sensor=1&v=' + Date.now(), { cache: 'no-store' });
+        var d = await response.json();
+
+        var t = parseFloat(d.temp);
+        var h = parseFloat(d.humidity);
+        var fresh = d.t && (Date.now() - Number(d.t) < SENSOR_STALE_MS);
+
+        if (fresh && isFinite(t) && isFinite(h)) {
+          showSensor((Math.round(t * 10) / 10) + '°F', Math.round(h) + '%');
+        } else {
+          showSensor('--', '--');
+        }
+      } catch (err) {
+        showSensor('--', '--');
+      }
+    }
+
+    // ---------- EVENTS ----------
+    // Builds the scrolling list so it always loops seamlessly,
+    // no matter how many events there are.
+    function renderEvents(groupHtml) {
+      lastGroupHtml = groupHtml;
+      var list = document.getElementById('events-list');
+      var container = document.getElementById('events-container');
+
+      list.style.animation = 'none';
+      list.innerHTML = groupHtml;
+
+      var groupHeight = list.offsetHeight || 1;
+      var viewHeight = container.clientHeight || 1;
+      var n = Math.max(1, Math.ceil(viewHeight / groupHeight));
+      var copies = n * 2;   // an even count keeps the -50% loop seamless
+
+      list.innerHTML = new Array(copies + 1).join(groupHtml);
+
+      list.style.animation = '';
+      list.style.animationDuration = Math.max(10, (groupHeight * n) / SCROLL_PX_PER_SEC) + 's';
+    }
+
+    async function fetchEvents() {
+      try {
+        var response = await fetch(WEB_APP_URL + '?v=' + Date.now(), { cache: 'no-store' });
+        var rows = await response.json();
+        if (!Array.isArray(rows)) return;
+
+        // Skip re-drawing if nothing changed, so the scroll isn't interrupted
+        var dataString = JSON.stringify(rows);
+        if (dataString === currentRawDataString) return;
+        currentRawDataString = dataString;
+
+        var today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        var items = [];
+        rows.forEach(function (row) {
+          var title = row['Event name'];
+          var rawDateStr = row['Event date and time'];
+          var location = row['Event location'];
+          var desc = row['Event Description'];
+          var approved = row['Approved'];
+
+          var eventDate = new Date(rawDateStr);
+          var isApproved = (approved === true || String(approved).trim().toUpperCase() === 'TRUE');
+
+          if (!isNaN(eventDate) && isApproved && eventDate >= today) {
+            items.push({ date: eventDate, raw: rawDateStr, title: title, location: location, desc: desc });
+          }
+        });
+
+        // Soonest event first
+        items.sort(function (a, b) { return a.date - b.date; });
+
+        var html = '';
+        items.forEach(function (ev) {
+          html += '<div class="event-item">' +
+            '<h3>' + esc(ev.title) + '</h3>' +
+            '<p>📅 <strong>When:</strong> ' + esc(formatWhen(ev.raw, ev.date)) + '</p>' +
+            '<p>📍 <strong>Where:</strong> ' + esc(ev.location) + '</p>' +
+            (ev.desc ? '<p>' + esc(ev.desc) + '</p>' : '') +
+            '</div>';
+        });
+
+        if (items.length === 0) {
+          html = '<div class="event-item">' +
+            '<h3>Upcoming Community Events</h3>' +
+            '<p>Submit local events via our community form to display them here.</p>' +
+            '</div>';
+        }
+
+        renderEvents('<div class="scroll-group">' + html + '</div>');
+
+      } catch (e) {
+        console.error('Error fetching events:', e);
+      }
+    }
+
+    // ---------- START ----------
+    fetchEvents();
+    fetchSensorData();
+    setInterval(fetchEvents, EVENTS_REFRESH_MS);
+    setInterval(fetchSensorData, SENSOR_REFRESH_MS);
+
+    // Re-fit the scroll loop if the window size changes
+    var resizeTimer;
+    window.addEventListener('resize', function () {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(function () {
+        if (lastGroupHtml) renderEvents(lastGroupHtml);
+      }, 300);
+    });
+
+    // Reload the whole page now and then to keep a long-running display healthy
+    setTimeout(function () { location.reload(); }, PAGE_RELOAD_MS);
+  </script>
+</body>
+</html>
